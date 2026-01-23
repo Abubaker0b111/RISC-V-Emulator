@@ -3,6 +3,16 @@
 #include<fstream>
 #include<string>
 
+struct Decoded_Instruction{//Struct to Hold the decoded Instructions
+    std::uint8_t opcode;
+    std::uint8_t rd;
+    std::uint8_t func3;
+    std::uint8_t rs1;
+    std::uint8_t rs2;
+    std::uint8_t func7;
+    std::int32_t imm;
+};
+
 struct RISC_V
 {
     std::uint32_t regs[32];
@@ -57,9 +67,60 @@ struct RISC_V
         word |= memory[PC + 3] << 24;
         return word;
     }
+
+    //Decodes the raw binary code into instructions
+    Decoded_Instruction DECODE(std::uint32_t raw){
+        Decoded_Instruction inst;   //stores the decoded instructions
+        inst.opcode = raw & 0x7F;   //Contains the opcode to specify the instruction type
+        inst.rd = (raw >> 7) & 0x1F;    //stores the address of destination register
+        inst.func3 = (raw >> 12) & 0x07;    //use to diffrentiate between instructions
+        inst.rs1 = (raw >> 15) & 0x1F;  //stores the address of source register 1
+        inst.rs2 = (raw >> 20) & 0x1F;  //stores the address of source register 2
+        inst.func7 = (raw >> 25) & 0x7F;
+
+        switch(inst.opcode){    //Decodes the imm value based on opcode
+            case 0x03:
+            case 0x13:
+            case 0x67:
+            case 0x73:
+                inst.imm = static_cast<std::int32_t>(raw) >> 20;
+                break;
+            case 0x23:
+                inst.imm = ((raw >> 7) & 0x1F) | (raw >> 25)<< 5;
+                if (inst.imm & 0x800) {
+                    inst.imm |= 0xFFFFF000;
+                }
+                break;
+            case 0x37:
+            case 0x17:
+                inst.imm = raw & 0xFFFFF000;
+                break;
+            case 0x63:
+                inst.imm = ((raw >> 8) & 0xF) << 1;
+                inst.imm |= ((raw >> 25) & 0x3F) << 5; 
+                inst.imm |= ((raw >> 7) & 0x1) << 11 ;
+                inst.imm |= ((raw >> 31) & 0x1) << 12;
+
+                if(inst.imm & 0x1000) {
+                    inst.imm |= 0xFFFFE000;
+                }
+                break;
+            case 0x6F:
+                inst.imm = ((raw >> 21) & 0x3FF) << 1;
+                inst.imm |= ((raw >> 20) & 0x1) << 11;
+                inst.imm |= ((raw >> 12) & 0xFF) << 12;
+                inst.imm |= ((raw >> 31) & 0x1) << 20;
+
+                if(inst.imm & 0x100000) {
+                    inst.imm |= 0xFFE00000;
+                }
+                break;
+        } 
+
+        return inst;
+    }
 };
 
-int main()
-{
-       
+
+int main() {
 }
