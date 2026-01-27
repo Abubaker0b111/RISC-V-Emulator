@@ -3,7 +3,14 @@
 #include<fstream>
 #include<string>
 #include<cstring>
-#include<iomanip>
+#include<vector>
+
+
+struct Memory_Segment{  //Struct to hold info about a Given memory segment
+    uint32_t start; // Starting address
+    uint32_t end;   // End Address
+    uint32_t flags; //Flags i.e 1,2,4 etc
+};
 
 struct Decoded_Instruction{//Struct to Hold the decoded Instructions
     uint8_t opcode;
@@ -51,6 +58,8 @@ struct RISC_V
     uint32_t MAX_MEMORY;
     uint8_t* memory;
     uint32_t MEM_Offset = 0x80000000;
+    std::vector<Memory_Segment> memory_map;
+    bool running;
     RISC_V()
     {
         //Memory size is set to 64MB
@@ -63,11 +72,32 @@ struct RISC_V
         memory = new uint8_t[MAX_MEMORY]{0};
         //The Program counter starts at the begging of memory
         PC = 0;
+
+        running = false;
     }
 
     ~RISC_V(){
         delete[] memory;
         memory = nullptr;
+    }
+
+    bool Check_Permission(uint32_t addr, int required_perm) {   //Checks the permission for a Given Memory address
+        for(const auto& seg : memory_map){
+            if(addr >= seg.start && addr < seg.end){
+                if((seg.flags & required_perm) == required_perm) return true;
+                else{
+                    return false;
+                }
+            }
+        }
+
+        if (addr == 0) return false;
+
+        if(addr >= (MEM_Offset + MAX_MEMORY - 0x10000) && addr < (MEM_Offset + MAX_MEMORY)){
+            if((6 & required_perm) == required_perm) return true;   //Checking for stack memory
+        }
+
+        return false;
     }
 
     //Reads a file parses it and Loads the program into the memory;
@@ -127,6 +157,12 @@ struct RISC_V
                     std::cerr << "Error: Segment too large for emulator memory." << std::endl;
                     return false;
                 }
+
+                Memory_Segment seg;
+                seg.start = phdr.p_vaddr;
+                seg.end = phdr.p_vaddr + phdr.p_memsz;
+                seg.flags = phdr.p_flags;
+                memory_map.push_back(seg);
 
                 file.seekg(phdr.p_offset);
                 file.read(reinterpret_cast<char*>(&memory[local_addr]), phdr.p_filesz);
@@ -204,9 +240,17 @@ struct RISC_V
     }
 
     uint32_t READ_32(uint32_t addr){  //Reads a complete word from the memory
+
         if(addr + 3 - MEM_Offset >= MAX_MEMORY){
             return 0;
         }
+
+        if(!Check_Permission(addr, 4) || !Check_Permission(addr + 3, 4)){   //Read Permission Check
+            std::cerr << "Fatal Error: Segmentation Fault (Read)" << std::endl;
+            running = false;
+            return 0;
+        }
+
         uint32_t word = (uint32_t)memory[addr - MEM_Offset] | 
                         ((uint32_t)memory[addr + 1 - MEM_Offset] << 8) | 
                         ((uint32_t)memory[addr + 2 - MEM_Offset] << 16) | 
@@ -218,6 +262,13 @@ struct RISC_V
         if(addr + 1 - MEM_Offset >= MAX_MEMORY){
             return 0;
         }
+
+        if(!Check_Permission(addr, 4) || !Check_Permission(addr + 1, 4)){   //Read Permission Check
+            std::cerr << "Fatal Error: Segmentation Fault (Read)" << std::endl;
+            running = false;
+            return 0;
+        }
+
         uint16_t hword = (uint16_t)memory[addr - MEM_Offset] | 
                          ((uint16_t)memory[addr + 1 - MEM_Offset] << 8);
         return hword;
@@ -227,11 +278,25 @@ struct RISC_V
         if (addr < MEM_Offset || addr - MEM_Offset >= MAX_MEMORY) {
             return 0;
         }
+
+        if(!Check_Permission(addr, 4)){   //Read Permission Check
+            std::cerr << "Fatal Error: Segmentation Fault (Read)" << std::endl;
+            running = false;
+            return 0;
+        }
+
         return memory[addr - MEM_Offset];
     }
 
     void WRITE_32(uint32_t addr, uint32_t val){ // Writes a word to memory
         if(addr + 3 - MEM_Offset >= MAX_MEMORY) return;
+
+        if(!Check_Permission(addr, 2) || !Check_Permission(addr + 3, 2)){   //Write Permission Check
+            std::cerr << "Fatal Error: Segmentation Fault (Write)" << std::endl;
+            running = false;
+            return;
+        }
+
         memory[addr - MEM_Offset] = val & 0xFF;
         memory[addr + 1 - MEM_Offset] = (val >> 8) & 0xFF;
         memory[addr + 2 - MEM_Offset] = (val >> 16) & 0xFF;
@@ -240,6 +305,13 @@ struct RISC_V
 
     void WRITE_16(uint32_t addr, uint32_t val){ // Writes a half word to memory
         if(addr + 1 - MEM_Offset >= MAX_MEMORY) return;
+
+        if(!Check_Permission(addr, 2) || !Check_Permission(addr + 1, 2)){   //Write Permission Check
+            std::cerr << "Fatal Error: Segmentation Fault (Write)" << std::endl;
+            running = false;
+            return;
+        }
+
         memory[addr - MEM_Offset] = val & 0xFF;
         memory[addr + 1 - MEM_Offset] = (val >> 8) & 0xFF;
     }
@@ -248,11 +320,18 @@ struct RISC_V
         if (addr < MEM_Offset || addr - MEM_Offset >= MAX_MEMORY) {
             return;
         }
+
+        if(!Check_Permission(addr, 2)){   //Write Permission Check
+            std::cerr << "Fatal Error: Segmentation Fault (Write)" << std::endl;
+            running = false;
+            return;
+        }
+
         memory[addr - MEM_Offset] = val;
     }
     
     //Executes the given instruction
-    void EXECUTE(Decoded_Instruction& inst, bool& running){
+    void EXECUTE(Decoded_Instruction& inst){
         bool branched = false;
 
         switch(inst.opcode){
@@ -465,16 +544,23 @@ struct RISC_V
     void RUN(std::string FileName){ // Runs the program loop and Instruction Cycle
         if(!LOAD_FILE(FileName)) return;
 
-        bool running = true;
+        running = true;
 
         while(running){
             uint32_t current_pc = PC;
+
+            if(!Check_Permission(PC, 1)){   //Checking if address has Execute Permission
+                std::cerr << "Fatal Error: Segmentation Fault (Instruction Fetch)" << std::endl;
+                running = false;
+                break;
+            }
+
             uint32_t raw = FETCH();
             PC += 4;
 
             Decoded_Instruction inst = DECODE(raw);
 
-            EXECUTE(inst, running);
+            EXECUTE(inst);
 
             if(PC - MEM_Offset >= MAX_MEMORY){
                 running = false;
