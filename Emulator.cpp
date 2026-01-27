@@ -2,23 +2,55 @@
 #include<iostream>
 #include<fstream>
 #include<string>
+#include<cstring>
+#include<iomanip>
 
 struct Decoded_Instruction{//Struct to Hold the decoded Instructions
-    std::uint8_t opcode;
-    std::uint8_t rd;
-    std::uint8_t func3;
-    std::uint8_t rs1;
-    std::uint8_t rs2;
-    std::uint8_t func7;
-    std::int32_t imm;
+    uint8_t opcode;
+    uint8_t rd;
+    uint8_t func3;
+    uint8_t rs1;
+    uint8_t rs2;
+    uint8_t func7;
+    int32_t imm;
+};
+
+//ELF32 Header
+struct Elf32_Ehdr {
+    unsigned char e_ident[16];
+    uint16_t      e_type; //Format Type
+    uint16_t      e_machine;// Machine Type
+    uint32_t      e_version;
+    uint32_t      e_entry;    // Entry point address
+    uint32_t      e_phoff;    // Program header offset
+    uint32_t      e_shoff;
+    uint32_t      e_flags;
+    uint16_t      e_ehsize;
+    uint16_t      e_phentsize;
+    uint16_t      e_phnum;    // Number of program headers
+    uint16_t      e_shentsize;
+    uint16_t      e_shnum;
+    uint16_t      e_shstrndx;
+};
+
+struct Elf32_Phdr {// Program Header
+    uint32_t p_type;   
+    uint32_t p_offset; // File offset
+    uint32_t p_vaddr;  // Virtual address in memory
+    uint32_t p_paddr;
+    uint32_t p_filesz; // Size in file
+    uint32_t p_memsz;  // Size in memory
+    uint32_t p_flags;
+    uint32_t p_align;
 };
 
 struct RISC_V
 {
-    std::uint32_t regs[32];
-    std::uint32_t PC;
-    std::uint32_t MAX_MEMORY;
-    std::uint8_t* memory;
+    uint32_t regs[32];
+    uint32_t PC;
+    uint32_t MAX_MEMORY;
+    uint8_t* memory;
+    uint32_t MEM_Offset = 0x80000000;
     RISC_V()
     {
         //Memory size is set to 64MB
@@ -33,43 +65,94 @@ struct RISC_V
         PC = 0;
     }
 
-    //Read a File and Loads it into the memory;
-    bool LOAD_FILE(std::string FileName)
-    {
-        std::ifstream file(FileName, std::ios::binary | std::ios::ate);
-        if(!file.is_open()) {
-            std::cerr<<"Error: Cannot open File \""<<FileName<<"\"";
+    ~RISC_V(){
+        delete[] memory;
+        memory = nullptr;
+    }
+
+    //Reads a file parses it and Loads the program into the memory;
+    bool LOAD_FILE(std::string FileName) {
+        std::ifstream file(FileName, std::ios::binary);
+        if(!file.is_open()) return false;
+
+        Elf32_Ehdr header;
+
+        file.read(reinterpret_cast<char*>(&header), sizeof(Elf32_Ehdr));
+
+        if (header.e_ident[0] != 0x7F || header.e_ident[1] != 'E' 
+            || header.e_ident[2] != 'L' || header.e_ident[3] != 'F') {
+                std::cerr<<"Error: Not a valid ELF file."<<std::endl;
+                return false;
+            }
+        if(header.e_machine != 0xF3){
+            std::cerr << "Error: Not a RISC-V architecture file." << std::endl;
             return false;
         }
 
-        //Checking the size of the file
-        std::streamsize size = file.tellg();
+        PC = header.e_entry;
+        Elf32_Phdr phdr;
 
-        //Moving to the begining of the file
-        file.seekg(0, std::ios::beg);
+        uint32_t lowest_vaddr = 0xFFFFFFFF;
 
-        if(size > MAX_MEMORY) {
-            std::cerr<<"Error: Memory OverFlow. The file\""<<FileName<<"\" is too large";
-            return false;
+        //Calculating the lowest virtual address to Set Memory Offset in order to fit inside the given memory
+        for(int i = 0; i < header.e_phnum; i++) {
+            file.seekg(header.e_phoff + (i * header.e_phentsize));
+            file.read(reinterpret_cast<char*>(&phdr), sizeof(Elf32_Phdr));
+            if (phdr.p_type == 1 && phdr.p_vaddr < lowest_vaddr) {
+                lowest_vaddr = phdr.p_vaddr;
+            }
         }
 
-        file.read(reinterpret_cast<char*>(&memory[0]), size);
+        MEM_Offset = lowest_vaddr; 
+
+        regs[2] = MEM_Offset + MAX_MEMORY - 4;// Setting the regs[2] to End of Memmory
+
+        for(int i=0 ; i<header.e_phnum ; i++){
+
+            file.seekg(header.e_phoff + (i * header.e_phentsize));
+            file.read(reinterpret_cast<char*>(&phdr), sizeof(Elf32_Phdr));
+
+
+            if(phdr.p_type == 1){// Only loads a phdr data into memory if p_type = 1
+
+                if (phdr.p_vaddr < MEM_Offset){
+                    std::cerr << "Error: Segment address 0x" << std::hex << phdr.p_vaddr 
+                            << " is below MEM_Offset 0x" << MEM_Offset << std::dec << std::endl;
+                    return false;
+                }
+
+                uint32_t local_addr = phdr.p_vaddr - MEM_Offset;//Calculates the local address using Memory Offset
+                
+                if(local_addr + phdr.p_memsz > MAX_MEMORY) {
+                    std::cerr << "Error: Segment too large for emulator memory." << std::endl;
+                    return false;
+                }
+
+                file.seekg(phdr.p_offset);
+                file.read(reinterpret_cast<char*>(&memory[local_addr]), phdr.p_filesz);
+
+                if(phdr.p_memsz > phdr.p_filesz) {
+                    std::memset(&memory[local_addr + phdr.p_filesz], 0, phdr.p_memsz-phdr.p_filesz);
+                }
+            }
+        }
         return true;
     }
 
-    //Fetches a 32bit word
-    std::uint32_t FETCH()
+    //Fetches a 32 bit word
+    uint32_t FETCH()
     {
-        std::uint32_t word = 0;
-        word |= memory[PC];
-        word |= memory[PC + 1] << 8;
-        word |= memory[PC + 2] << 16;
-        word |= memory[PC + 3] << 24;
+        if(PC - MEM_Offset >= MAX_MEMORY || PC < MEM_Offset) return 0;
+        uint32_t word = 0;
+        word |= memory[PC - MEM_Offset];
+        word |= memory[PC + 1 - MEM_Offset] << 8;
+        word |= memory[PC + 2 - MEM_Offset] << 16;
+        word |= memory[PC + 3 - MEM_Offset] << 24;
         return word;
     }
 
     //Decodes the raw binary code into instructions
-    Decoded_Instruction DECODE(std::uint32_t raw){
+    Decoded_Instruction DECODE(uint32_t raw){
         Decoded_Instruction inst;   //stores the decoded instructions
         inst.opcode = raw & 0x7F;   //Contains the opcode to specify the instruction type
         inst.rd = (raw >> 7) & 0x1F;    //stores the address of destination register
@@ -83,7 +166,7 @@ struct RISC_V
             case 0x13:
             case 0x67:
             case 0x73:
-                inst.imm = static_cast<std::int32_t>(raw) >> 20;
+                inst.imm = static_cast<int32_t>(raw) >> 20;
                 break;
             case 0x23:
                 inst.imm = ((raw >> 7) & 0x1F) | (raw >> 25)<< 5;
@@ -120,58 +203,72 @@ struct RISC_V
         return inst;
     }
 
-    std::uint32_t READ_32(std::uint32_t addr){  //Reads a complete word from the memory
-        if(addr + 3 >= MAX_MEMORY){
+    uint32_t READ_32(uint32_t addr){  //Reads a complete word from the memory
+        if(addr + 3 - MEM_Offset >= MAX_MEMORY){
             return 0;
         }
-        std::uint32_t word = (std::uint32_t)memory[addr] | 
-                             ((std::uint32_t)memory[addr + 1] << 8) | 
-                             ((std::uint32_t)memory[addr + 2] << 16) | 
-                             ((std::uint32_t)memory[addr + 3] << 24);
+        uint32_t word = (uint32_t)memory[addr - MEM_Offset] | 
+                        ((uint32_t)memory[addr + 1 - MEM_Offset] << 8) | 
+                        ((uint32_t)memory[addr + 2 - MEM_Offset] << 16) | 
+                        ((uint32_t)memory[addr + 3 - MEM_Offset] << 24);
         return word;
     }
 
-    std::uint16_t READ_16(std::uint32_t addr){  //Reads a half word from the memory
-        if(addr + 1 >= MAX_MEMORY){
+    uint16_t READ_16(uint32_t addr){  //Reads a half word from the memory
+        if(addr + 1 - MEM_Offset >= MAX_MEMORY){
             return 0;
         }
-        std::uint16_t hword = (std::uint16_t)memory[addr] | 
-                              ((std::uint16_t)memory[addr + 1] << 8);
+        uint16_t hword = (uint16_t)memory[addr - MEM_Offset] | 
+                         ((uint16_t)memory[addr + 1 - MEM_Offset] << 8);
         return hword;
     }
 
-    void WRITE_32(std::uint32_t addr, std::uint32_t val){// Writes a word to memory
-        if(addr + 3 > MAX_MEMORY) return;
-        memory[addr] = val & 0xFF;
-        memory[addr + 1] = (val >> 8) & 0xFF;
-        memory[addr + 2] = (val >> 16) & 0xFF;
-        memory[addr + 3] = (val >> 24) & 0xFF;
+    uint8_t READ_8(uint32_t addr){  //Reads a byte from memory
+        if (addr < MEM_Offset || addr - MEM_Offset >= MAX_MEMORY) {
+            return 0;
+        }
+        return memory[addr - MEM_Offset];
     }
 
-    void WRITE_16(std::uint32_t addr, std::uint32_t val){// Writes a half word to memory
-        if(addr + 1 > MAX_MEMORY) return;
-        memory[addr] = val & 0xFF;
-        memory[addr + 1] = (val >> 8) & 0xFF;
+    void WRITE_32(uint32_t addr, uint32_t val){ // Writes a word to memory
+        if(addr + 3 - MEM_Offset >= MAX_MEMORY) return;
+        memory[addr - MEM_Offset] = val & 0xFF;
+        memory[addr + 1 - MEM_Offset] = (val >> 8) & 0xFF;
+        memory[addr + 2 - MEM_Offset] = (val >> 16) & 0xFF;
+        memory[addr + 3 - MEM_Offset] = (val >> 24) & 0xFF;
     }
 
+    void WRITE_16(uint32_t addr, uint32_t val){ // Writes a half word to memory
+        if(addr + 1 - MEM_Offset >= MAX_MEMORY) return;
+        memory[addr - MEM_Offset] = val & 0xFF;
+        memory[addr + 1 - MEM_Offset] = (val >> 8) & 0xFF;
+    }
+
+    void WRITE_8(uint32_t addr, uint8_t val) {  // Writes a byte to memory 
+        if (addr < MEM_Offset || addr - MEM_Offset >= MAX_MEMORY) {
+            return;
+        }
+        memory[addr - MEM_Offset] = val;
+    }
+    
     //Executes the given instruction
-    void Execute(Decoded_Instruction& inst){
+    void EXECUTE(Decoded_Instruction& inst, bool& running){
         bool branched = false;
 
         switch(inst.opcode){
             case 0x03:
                 switch(inst.func3){
                     case 0x0:   //LB
-                        regs[inst.rd] = (std::int8_t)memory[regs[inst.rs1] + inst.imm];
+                        regs[inst.rd] = (int8_t)READ_8(regs[inst.rs1] + inst.imm);
                         break;
                     case 0x1:   //LH
-                        regs[inst.rd] = (std::int16_t)READ_16(regs[inst.rs1] + inst.imm);
+                        regs[inst.rd] = (int16_t)READ_16(regs[inst.rs1] + inst.imm);
                         break;
                     case 0x2:   //LW
                         regs[inst.rd] = READ_32(regs[inst.rs1] + inst.imm);
                         break;
                     case 0x4:   //LBU
-                        regs[inst.rd] = memory[regs[inst.rs1]] + inst.imm;
+                        regs[inst.rd] = READ_8(regs[inst.rs1] + inst.imm);
                         break;
                     case 0x5:   //LHU
                         regs[inst.rd] = READ_16(regs[inst.rs1] + inst.imm);
@@ -219,11 +316,12 @@ struct RISC_V
                 break;
             case 0x17:  //AUIPC
                 regs[inst.rd] = (PC - 4) + inst.imm;
+
                 break;
             case 0x23:
                 switch(inst.func3){
                     case 0x0:   //SB
-                        memory[regs[inst.rs1] + inst.imm] = regs[inst.rs2] & 0xFF;
+                        WRITE_8(regs[inst.rs1] + inst.imm, regs[inst.rs2] & 0xFF);
                         break;
                     case 0x1:   //SH
                         WRITE_16(regs[inst.rs1] + inst.imm, regs[inst.rs2] & 0xFFFF);
@@ -255,7 +353,7 @@ struct RISC_V
                     case 0x2:
                         switch(inst.func7){
                             case 0x00:  //SLT
-                                regs[inst.rd] = ((std::int32_t)regs[inst.rs1] < (std::int32_t)regs[inst.rs2]) ? 1 : 0;
+                                regs[inst.rd] = ((int32_t)regs[inst.rs1] < (int32_t)regs[inst.rs2]) ? 1 : 0;
                                 break;
                         }
                         break;
@@ -279,7 +377,7 @@ struct RISC_V
                                 regs[inst.rd] = regs[inst.rs1] >> (regs[inst.rs2] & 0x1F);
                                 break;
                             case 0x20:  //SRA
-                                regs[inst.rd] = (std::int32_t)regs[inst.rs1] >> (regs[inst.rs2] & 0x1F);
+                                regs[inst.rd] = (int32_t)regs[inst.rs1] >> (regs[inst.rs2] & 0x1F);
                                 break;
                         }
                         break;
@@ -311,10 +409,10 @@ struct RISC_V
                         PC = (regs[inst.rs1] != regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
                         break;
                     case 0x4:   //BLT
-                        PC = ((std::int32_t)regs[inst.rs1] < (std::int32_t)regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        PC = ((int32_t)regs[inst.rs1] < (int32_t)regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
                         break;
                     case 0x5:   //BGE
-                        PC = ((std::int32_t)regs[inst.rs1] >= (std::int32_t)regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        PC = ((int32_t)regs[inst.rs1] >= (int32_t)regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
                         break;
                     case 0x6:   //BLTU
                         PC = (regs[inst.rs1] < regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
@@ -327,7 +425,7 @@ struct RISC_V
             case 0x67:
                 switch(inst.func3){
                     case 0x0:   //JALR
-                        std::uint32_t targ = (regs[inst.rs1] + inst.imm) & ~1;
+                        uint32_t targ = (regs[inst.rs1] + inst.imm) & ~1;
                         regs[inst.rd] = PC;
                         PC = targ;
                         break;
@@ -343,15 +441,15 @@ struct RISC_V
                         switch(regs[17]){
                             case 93:
                                 std::cout<<"\n[Emulator] Program exited with code "<<regs[10]<<std::endl;
-                                exit(0);
+                                running = false;
                                 break;
                             case 64:
-                                if(regs[10] == 1){
-                                    for(std::uint32_t i = 0; i<regs[12]; i++){
-                                        std::cout<<(char)memory[regs[11] + i];
+                                if(regs[10] == 1 || regs[10] == 2){
+                                    for(uint32_t i = 0; i<regs[12]; i++){
+                                        char c = (char)READ_8(regs[11] + i);
+                                        std::cout << c;
                                     }
                                 }
-                                break;
                         }
                         break;
                     case 0x1:   //EBREAK
@@ -363,8 +461,40 @@ struct RISC_V
 
         regs[0] = 0;
     }
+
+    void RUN(std::string FileName){ // Runs the program loop and Instruction Cycle
+        if(!LOAD_FILE(FileName)) return;
+
+        bool running = true;
+
+        while(running){
+            uint32_t current_pc = PC;
+            uint32_t raw = FETCH();
+            PC += 4;
+
+            Decoded_Instruction inst = DECODE(raw);
+
+            EXECUTE(inst, running);
+
+            if(PC - MEM_Offset >= MAX_MEMORY){
+                running = false;
+            }
+        }
+    }
 };
 
 
-int main() {
+int main(int argc, char* argv[]) {
+    if(argc < 2){
+        std::cout << "Usage: ./emulator <elf_file>" << std::endl;
+        return 1;
+    }
+
+    RISC_V CPU;
+    std::string filename = argv[1];
+
+    std::cout << "Starting Emulator..." << std::endl;
+    CPU.RUN(filename);
+    
+    return 0;
 }
