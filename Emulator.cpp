@@ -57,23 +57,33 @@ struct RISC_V
     uint32_t PC;
     uint32_t MAX_MEMORY;
     uint8_t* memory;
-    uint32_t MEM_Offset = 0x80000000;
+    uint32_t MEM_Offset;
     std::vector<Memory_Segment> memory_map;
     bool running;
+
+    uint32_t csrs[4096]; // CSR registers
+
+    const uint32_t MCYCLE_L   = 0xB00; // machine cycle counter (low)
+    const uint32_t MCYCLE_H   = 0xB80; // machine cycle counter (high)
+    const uint32_t MINSTRET_L  = 0xB02; // instructions retired (low)
+    const uint32_t MINSTRET_H = 0xB82; // instructions retired (high)
+
     RISC_V()
     {
-        //Memory size is set to 64MB
-        MAX_MEMORY = 1024 * 1024 * 64;  
+        
+        MAX_MEMORY = 1024 * 1024 * 64;  //Memory size is set to 64MB
         //Setting all registers to 0
         for(int i=0 ; i<32 ; i++) {
             regs[i] = 0;
         }
-        //Allocating Memory
-        memory = new uint8_t[MAX_MEMORY]{0};
-        //The Program counter starts at the begging of memory
-        PC = 0;
+       
+        memory = new uint8_t[MAX_MEMORY]{0}; //Allocating Memory
+        PC = 0; //The Program counter starts at the begging of memory
 
         running = false;
+
+        for(int i=0; i<4096; i++) csrs[i] = 0;
+
     }
 
     ~RISC_V(){
@@ -515,25 +525,62 @@ struct RISC_V
                 PC = (PC - 4) + inst.imm;
                 break;
             case 0x73:
-                switch(inst.imm){
-                    case 0x0:   //ECALL
-                        switch(regs[17]){
-                            case 93:
-                                std::cout<<"\n[Emulator] Program exited with code "<<regs[10]<<std::endl;
-                                running = false;
-                                break;
-                            case 64:
-                                if(regs[10] == 1 || regs[10] == 2){
-                                    for(uint32_t i = 0; i<regs[12]; i++){
-                                        char c = (char)READ_8(regs[11] + i);
-                                        std::cout << c;
+                if(inst.func3 == 0x0){
+                    switch(inst.imm){
+                        case 0x0:   //ECALL
+                            switch(regs[17]){
+                                case 93:
+                                    std::cout<<"\n[Emulator] Program exited with code "<<regs[10]<<std::endl;
+                                    running = false;
+                                    break;
+                                case 64:
+                                    if(regs[10] == 1 || regs[10] == 2){
+                                        for(uint32_t i = 0; i<regs[12]; i++){
+                                            char c = (char)READ_8(regs[11] + i);
+                                            std::cout << c;
+                                        }
                                     }
-                                }
-                        }
-                        break;
-                    case 0x1:   //EBREAK
-                        std::cout << "Breakpoint hit at PC: " << std::hex << (PC-4) << std::endl;
-                        break;
+                            }
+                            break;
+                        case 0x1:   //EBREAK
+                            std::cout << "Breakpoint hit at PC: " << std::hex << (PC-4) << std::endl;
+                            break;
+                    }
+                    break;
+                }
+                else{
+                    uint32_t csr_addr = inst.imm & 0xFFF;
+                    uint32_t old_val = csrs[csr_addr]; 
+                    uint32_t write_mask = 0;
+
+    
+                    if (inst.rd != 0) regs[inst.rd] = old_val;
+
+                    switch (inst.func3) {
+                        case 0x1: // CSRRW
+                            csrs[csr_addr] = regs[inst.rs1];
+                            break;
+                        
+                        case 0x2: // CSRRS
+                            csrs[csr_addr] |= regs[inst.rs1];
+                            break;
+                        
+                        case 0x3: // CSRRC
+                            csrs[csr_addr] &= ~regs[inst.rs1];
+                            break;
+
+                        case 0x5: // CSRRWI
+                            csrs[csr_addr] = inst.rs1; 
+                            break;
+                        
+                        case 0x6: // CSRRSI
+                            csrs[csr_addr] |= inst.rs1;
+                            break;
+                        
+                        case 0x7: // CSRRCI
+                            csrs[csr_addr] &= ~inst.rs1;
+                            break;
+                    }
                 }
                 break;
             }
@@ -545,6 +592,8 @@ struct RISC_V
         if(!LOAD_FILE(FileName)) return;
 
         running = true;
+        uint64_t cycle_count = 0;
+        uint64_t inst_count = 0;
 
         while(running){
             uint32_t current_pc = PC;
@@ -559,6 +608,14 @@ struct RISC_V
             PC += 4;
 
             Decoded_Instruction inst = DECODE(raw);
+
+            cycle_count++;
+            inst_count++;
+
+            csrs[MCYCLE_L]    = cycle_count & 0xFFFFFFFF;
+            csrs[MCYCLE_H]   = cycle_count >> 32;
+            csrs[MINSTRET_L]  = inst_count & 0xFFFFFFFF;
+            csrs[MINSTRET_H] = inst_count >> 32;
 
             EXECUTE(inst);
 
