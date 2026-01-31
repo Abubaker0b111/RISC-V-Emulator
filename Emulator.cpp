@@ -5,6 +5,40 @@
 #include<cstring>
 #include<vector>
 
+//Global Variables
+uint64_t cycle_count = 0;   //cycles executed
+uint64_t inst_count = 0;    //instructions executed;
+
+struct BranchPredictor{ //Predictes Branch in advance to save time
+    uint8_t table[4096];
+    uint64_t total; //Helper var: Total prediction;
+    uint64_t correct;   //Helper var: Correct predictions;
+
+    BranchPredictor(){
+        std::memset(table, 1, 4096);    //initialzing the table with 1s
+    }
+
+    bool predict(uint32_t pc){
+        return table[(pc >> 2) & 0xFFF] >= 2;
+    }
+
+    void update(uint32_t pc, bool taken){   //Updates the table based on actual and predicted operation
+        uint32_t index = (pc >> 2) & 0xFFF;
+        uint8_t state = table[index];
+
+        total++;
+
+        if(taken){
+            if(state < 3) table[index]++; 
+        }
+        else{
+            if(state > 0) table[index]--;
+        }
+    }
+
+};
+BranchPredictor btb;
+
 
 struct Memory_Segment{  //Struct to hold info about a Given memory segment
     uint32_t start; // Starting address
@@ -490,27 +524,46 @@ struct RISC_V
                 regs[inst.rd] = inst.imm;
                 break;
             case 0x63:
+                { 
+                bool take = false;
+
                 switch(inst.func3){
                     case 0x0:   //BEQ
-                        PC = (regs[inst.rs1] == regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        take = regs[inst.rs1] == regs[inst.rs2];
                         break;
                     case 0x1:   //BNE
-                        PC = (regs[inst.rs1] != regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        take = regs[inst.rs1] != regs[inst.rs2];
                         break;
                     case 0x4:   //BLT
-                        PC = ((int32_t)regs[inst.rs1] < (int32_t)regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        take = (int32_t)regs[inst.rs1] < (int32_t)regs[inst.rs2];
                         break;
                     case 0x5:   //BGE
-                        PC = ((int32_t)regs[inst.rs1] >= (int32_t)regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        take = (int32_t)regs[inst.rs1] >= (int32_t)regs[inst.rs2];
                         break;
                     case 0x6:   //BLTU
-                        PC = (regs[inst.rs1] < regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        take = regs[inst.rs1] < regs[inst.rs2];
                         break;
                     case 0x7:   //BGEU
-                        PC = (regs[inst.rs1] >= regs[inst.rs2]) ? (PC - 4) + inst.imm : PC;
+                        take = regs[inst.rs1] >= regs[inst.rs2];
                         break;
                 }
+
+                bool prediction = btb.predict(PC - 4);
+
+                if(prediction == take){
+                    btb.correct++;
+                }
+                else{
+                    cycle_count += 2; //Simulating pipeline flush due to misprediction
+                }
+
+                btb.update(PC - 4, take); //Updating the table
+
+                if(take){
+                    PC = (PC - 4) + inst.imm; //Executing the actual instruction
+                }
                 break;
+            }
             case 0x67:
                 switch(inst.func3){
                     case 0x0:   //JALR
@@ -592,8 +645,6 @@ struct RISC_V
         if(!LOAD_FILE(FileName)) return;
 
         running = true;
-        uint64_t cycle_count = 0;
-        uint64_t inst_count = 0;
 
         while(running){
             uint32_t current_pc = PC;
@@ -623,6 +674,8 @@ struct RISC_V
                 running = false;
             }
         }
+        std::cout<<"\n--- Branch Predictor Stats ---"<<std::endl;
+        std::cout<<"Accuracy: "<<(double)btb.correct / btb.total * 100.0<<"%"<<std::endl;
     }
 };
 
