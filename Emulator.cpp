@@ -9,6 +9,38 @@
 uint64_t cycle_count = 0;   //cycles executed
 uint64_t inst_count = 0;    //instructions executed;
 
+struct TraceRecord{ //Struct to hold trace buffer records
+    uint32_t pc;
+    uint32_t raw;
+};
+
+static const int TRACE_SIZE = 100;
+TraceRecord trace_buffer[TRACE_SIZE];
+int trace_index = 0;
+bool trace_full = false;
+
+void Log_Trace(uint32_t pc, uint32_t raw){  //Logs traces using circular logic
+    trace_buffer[trace_index].pc = pc;
+    trace_buffer[trace_index].raw = raw;
+
+    trace_index = (trace_index + 1) % TRACE_SIZE;
+    if(trace_index == 0) trace_full = true;
+}
+
+void Dump_Trace(){  //Dumps trace duh!
+    std::cout<<"\n|| Trace Dump ||\n";
+    std::cout<<"---------------------------------\n";
+
+    int start = trace_full ? trace_index : 0;
+    int count = trace_full ? TRACE_SIZE : trace_index;
+
+    for(int i=0; i<count ; i++){
+        int idx = (start + i) % TRACE_SIZE;
+        std::cout<<"PC: 0x"<<std::hex<<trace_buffer[idx].pc<<" | Inst: 0x"<<trace_buffer[idx].raw<<std::dec<<std::endl;
+    }
+    std::cout<<"---------------------------------\n";
+}
+
 struct BranchPredictor{ //Predictes Branch in advance to save time
     uint8_t table[4096];
     uint64_t total; //Helper var: Total prediction;
@@ -38,7 +70,6 @@ struct BranchPredictor{ //Predictes Branch in advance to save time
 
 };
 BranchPredictor btb;
-
 
 struct Memory_Segment{  //Struct to hold info about a Given memory segment
     uint32_t start; // Starting address
@@ -101,6 +132,8 @@ struct RISC_V
     const uint32_t MCYCLE_H   = 0xB80; // machine cycle counter (high)
     const uint32_t MINSTRET_L  = 0xB02; // instructions retired (low)
     const uint32_t MINSTRET_H = 0xB82; // instructions retired (high)
+
+    const uint32_t UART_addr = 0x10000000; //Address of the special i/o location
 
     RISC_V()
     {
@@ -291,6 +324,7 @@ struct RISC_V
 
         if(!Check_Permission(addr, 4) || !Check_Permission(addr + 3, 4)){   //Read Permission Check
             std::cerr << "Fatal Error: Segmentation Fault (Read)" << std::endl;
+            Dump_Trace();
             running = false;
             return 0;
         }
@@ -309,6 +343,7 @@ struct RISC_V
 
         if(!Check_Permission(addr, 4) || !Check_Permission(addr + 1, 4)){   //Read Permission Check
             std::cerr << "Fatal Error: Segmentation Fault (Read)" << std::endl;
+            Dump_Trace();
             running = false;
             return 0;
         }
@@ -325,6 +360,7 @@ struct RISC_V
 
         if(!Check_Permission(addr, 4)){   //Read Permission Check
             std::cerr << "Fatal Error: Segmentation Fault (Read)" << std::endl;
+            Dump_Trace();
             running = false;
             return 0;
         }
@@ -337,6 +373,7 @@ struct RISC_V
 
         if(!Check_Permission(addr, 2) || !Check_Permission(addr + 3, 2)){   //Write Permission Check
             std::cerr << "Fatal Error: Segmentation Fault (Write)" << std::endl;
+            Dump_Trace();
             running = false;
             return;
         }
@@ -352,6 +389,7 @@ struct RISC_V
 
         if(!Check_Permission(addr, 2) || !Check_Permission(addr + 1, 2)){   //Write Permission Check
             std::cerr << "Fatal Error: Segmentation Fault (Write)" << std::endl;
+            Dump_Trace();
             running = false;
             return;
         }
@@ -361,12 +399,19 @@ struct RISC_V
     }
 
     void WRITE_8(uint32_t addr, uint8_t val) {  // Writes a byte to memory 
+
+        if (addr == UART_addr){
+            std::cout << (char)val; // Print to terminal
+            return;
+        }
+
         if (addr < MEM_Offset || addr - MEM_Offset >= MAX_MEMORY) {
             return;
         }
 
         if(!Check_Permission(addr, 2)){   //Write Permission Check
             std::cerr << "Fatal Error: Segmentation Fault (Write)" << std::endl;
+            Dump_Trace();
             running = false;
             return;
         }
@@ -651,11 +696,16 @@ struct RISC_V
 
             if(!Check_Permission(PC, 1)){   //Checking if address has Execute Permission
                 std::cerr << "Fatal Error: Segmentation Fault (Instruction Fetch)" << std::endl;
+                std::cerr.flush();
+                Dump_Trace();
                 running = false;
                 break;
             }
 
             uint32_t raw = FETCH();
+
+            Log_Trace(PC, raw); //Loggin Trace after each fetch
+
             PC += 4;
 
             Decoded_Instruction inst = DECODE(raw);
@@ -674,8 +724,6 @@ struct RISC_V
                 running = false;
             }
         }
-        std::cout<<"\n--- Branch Predictor Stats ---"<<std::endl;
-        std::cout<<"Accuracy: "<<(double)btb.correct / btb.total * 100.0<<"%"<<std::endl;
     }
 };
 
