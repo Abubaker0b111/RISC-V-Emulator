@@ -4,6 +4,7 @@
 #include<string>
 #include<cstring>
 #include<vector>
+#include<conio.h>
 
 //Global Variables
 uint64_t cycle_count = 0;   //cycles executed
@@ -354,6 +355,20 @@ struct RISC_V
     }
 
     uint8_t READ_8(uint32_t addr){  //Reads a byte from memory
+
+        if(addr == 0x10000005) { //Checks if a key is pressed or not
+            return _kbhit() ? 0x01 : 0x00;
+        }
+
+        if(addr == 0x10000000) {    //If key is pressed reads the character and returns it
+            if(_kbhit()){
+                return _getch();
+            }
+            else{
+                return 0;
+            }
+        }
+
         if (addr < MEM_Offset || addr - MEM_Offset >= MAX_MEMORY) {
             return 0;
         }
@@ -402,6 +417,7 @@ struct RISC_V
 
         if (addr == UART_addr){
             std::cout << (char)val; // Print to terminal
+            std::cout.flush();
             return;
         }
 
@@ -687,7 +703,10 @@ struct RISC_V
     }
 
     void RUN(std::string FileName){ // Runs the program loop and Instruction Cycle
-        if(!LOAD_FILE(FileName)) return;
+        if(!LOAD_FILE(FileName)) {
+            std::cerr<<"\nError: Cannot open file \""<<FileName<<"\"\n";
+            return;
+        }
 
         running = true;
 
