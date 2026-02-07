@@ -33,44 +33,46 @@ Built from scratch in C++ to understand the micro-architectural details of moder
 | `0x02004000` - `0x0200BFFF` | **CLINT** | Timer Registers (mtime, mtimecmp) |
 | `0x10000000` - `0x10000005` | **UART** | Serial Console (RX/TX) |
 | `0x80000000` - `0x84000000` | **DRAM** | 64MB Main Memory (Program & Data) |
+```mermaid
+    graph TD
+        subgraph CPU ["RISC-V CPU Core (RV32I)"]
+            ALU[ALU / Execution Unit]
+            Regs[Register File x32]
+            CSR[CSR File & Trap Logic]
+            BTB[Branch Predictor]
+            Decoder[Instruction Decoder]
+            
+            Decoder --> ALU
+            Regs <--> ALU
+            ALU --> CSR
+            BTB --> Decoder
+        end
 
-graph TD
-    subgraph CPU ["RISC-V CPU Core (RV32I)"]
-        ALU[ALU / Execution Unit]
-        Regs[Register File x32]
-        CSR[CSR File & Trap Logic]
-        BTB[Branch Predictor]
-        Decoder[Instruction Decoder]
+        subgraph Bus ["System Bus / Memory Map"]
+            Mux{Address Decoder}
+        end
+
+        subgraph Peripherals ["Memory & Peripherals"]
+            UART["UART Serial (0x10000000)"]
+            CLINT["CLINT Timer (0x02004000)"]
+            DRAM["Main Memory (0x80000000)"]
+        end
+
+        %% Connections
+        ALU -- "Load/Store Addr" --> Mux
+        Mux -- "Read/Write" --> UART
+        Mux -- "Read/Write" --> CLINT
+        Mux -- "Fetch/Data" --> DRAM
+
+        %% Interrupt Line
+        CLINT -.->|"Timer Interrupt (MTIP)"| CSR
         
-        Decoder --> ALU
-        Regs <--> ALU
-        ALU --> CSR
-        BTB --> Decoder
-    end
+        %% Styles
+        style CPU fill:#f9f,stroke:#333,stroke-width:2px
+        style Peripherals fill:#ccf,stroke:#333,stroke-width:2px
+        style Bus fill:#ff9,stroke:#333,stroke-width:2px
 
-    subgraph Bus ["System Bus / Memory Map"]
-        Mux{Address Decoder}
-    end
-
-    subgraph Peripherals ["Memory & Peripherals"]
-        UART["UART Serial (0x10000000)"]
-        CLINT["CLINT Timer (0x02004000)"]
-        DRAM["Main Memory (0x80000000)"]
-    end
-
-    %% Connections
-    ALU -- "Load/Store Addr" --> Mux
-    Mux -- "Read/Write" --> UART
-    Mux -- "Read/Write" --> CLINT
-    Mux -- "Fetch/Data" --> DRAM
-
-    %% Interrupt Line
-    CLINT -.->|"Timer Interrupt (MTIP)"| CSR
-    
-    %% Styles
-    style CPU fill:#f9f,stroke:#333,stroke-width:2px
-    style Peripherals fill:#ccf,stroke:#333,stroke-width:2px
-    style Bus fill:#ff9,stroke:#333,stroke-width:2px
+```
 
 ### Interrupt Logic
 The emulator simulates the RISC-V **Trap Architecture**. When `mtime >= mtimecmp`:
