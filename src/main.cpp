@@ -136,6 +136,12 @@ struct RISC_V
 
     const uint32_t UART_addr = 0x10000000; //Address of the special i/o location
 
+    uint64_t mtimecmp = 0xffffffffffffffff; //Alarm time
+    uint32_t mtvec = 0; //Address of the interrupt handler
+    uint32_t mepc = 0;  //Old PC (return after interrupt)
+    uint32_t mcause = 0;    //Cause of interrupt
+    uint32_t mstatus = 0;   //machine status
+
     RISC_V()
     {
         
@@ -319,6 +325,12 @@ struct RISC_V
 
     uint32_t READ_32(uint32_t addr){  //Reads a complete word from the memory
 
+        uint64_t current_time = ((uint64_t)csrs[MCYCLE_H] << 32) | csrs[MCYCLE_L];
+
+        if (addr == 0x0200BFF8) return (uint32_t)(current_time & 0xFFFFFFFF);   //higher 32 bits
+
+        if (addr == 0x0200BFFC) return (uint32_t)(current_time >> 32);  //lower 32 bits
+
         if(addr + 3 - MEM_Offset >= MAX_MEMORY){
             return 0;
         }
@@ -384,6 +396,18 @@ struct RISC_V
     }
 
     void WRITE_32(uint32_t addr, uint32_t val){ // Writes a word to memory
+
+        if(addr == 0x02004000){//lower 32 bits
+            mtimecmp = (mtimecmp & 0xFFFFFFFF00000000) | (uint64_t)val;
+            return;
+        }
+        
+        if (addr == 0x02004004){//higher 32 bits
+            mtimecmp = (mtimecmp & 0x00000000FFFFFFFF) | ((uint64_t)val << 32);
+            csrs[0x344] &= ~(1 << 7); //clear pending bit
+            return;
+        }
+
         if(addr + 3 - MEM_Offset >= MAX_MEMORY) return;
 
         if(!Check_Permission(addr, 2) || !Check_Permission(addr + 3, 2)){   //Write Permission Check
@@ -640,6 +664,15 @@ struct RISC_V
                 break;
             case 0x73:
                 if(inst.func3 == 0x0){
+                    if(inst.func7 == 0x18 && inst.rs2 == 0x2){
+                        PC = mepc;  //Restoring PC
+
+                        //Restoring interrupts
+                        uint32_t mpie_bit = (mstatus >> 7) & 1;
+                        mstatus &= ~(1 << 3);
+                        mstatus |= (mpie_bit << 3);
+                        mstatus |= (1 << 7);
+                    }
                     switch(inst.imm){
                         case 0x0:   //ECALL
                             switch(regs[17]){
@@ -664,42 +697,81 @@ struct RISC_V
                 }
                 else{
                     uint32_t csr_addr = inst.imm & 0xFFF;
-                    uint32_t old_val = csrs[csr_addr]; 
-                    uint32_t write_mask = 0;
-
-    
+                    uint32_t old_val = csrs[csr_addr];
+                    
+                    if(csr_addr == 0x300) old_val = mstatus;
+                    if(csr_addr == 0x305) old_val = mtvec;
+                    if(csr_addr == 0x341) old_val = mepc;
+                    if(csr_addr == 0x342) old_val = mcause;
+                    
                     if (inst.rd != 0) regs[inst.rd] = old_val;
+
+                    uint32_t new_val = old_val;
 
                     switch (inst.func3) {
                         case 0x1: // CSRRW
-                            csrs[csr_addr] = regs[inst.rs1];
+                            new_val = regs[inst.rs1];
                             break;
                         
                         case 0x2: // CSRRS
-                            csrs[csr_addr] |= regs[inst.rs1];
+                            new_val |= regs[inst.rs1];
                             break;
                         
                         case 0x3: // CSRRC
-                            csrs[csr_addr] &= ~regs[inst.rs1];
+                            new_val &= ~regs[inst.rs1];
                             break;
 
                         case 0x5: // CSRRWI
-                            csrs[csr_addr] = inst.rs1; 
+                            new_val = inst.rs1; 
                             break;
                         
                         case 0x6: // CSRRSI
-                            csrs[csr_addr] |= inst.rs1;
+                            new_val |= inst.rs1;
                             break;
                         
                         case 0x7: // CSRRCI
-                            csrs[csr_addr] &= ~inst.rs1;
+                            new_val &= ~inst.rs1;
                             break;
                     }
+                    csrs[csr_addr] = new_val;
+
+                    if(csr_addr == 0x300) mstatus = new_val;
+                    if(csr_addr == 0x305) mtvec = new_val;
+                    if(csr_addr == 0x341) mepc = new_val;
+                    if(csr_addr == 0x342) mcause = new_val;
                 }
                 break;
             }
 
         regs[0] = 0;
+    }
+
+    void checkInterrupt(){  //Runs every cycle and checks interrupts
+
+        uint64_t current_time = ((uint64_t)csrs[MCYCLE_H] << 32) | csrs[MCYCLE_L];
+
+        if(current_time >= mtimecmp) {
+            csrs[0x344] |= (1 << 7);
+        }
+
+        bool g_enable = (mstatus >> 3) & 1; //Checking Global interrupt enable
+        if(!g_enable) return;
+
+        bool timer_enable = (csrs[0x304] >> 7) & 1; //Checking timer interrupt enable
+
+        bool timer_pending = (csrs[0x344] >> 7) & 1;
+
+        if(timer_enable && timer_pending){
+            mepc = PC;// Saving the current PC
+
+            mcause = 0x80000007; //Setting the cause to Machine Timer Interrupt
+
+            uint32_t mie_bit = (mstatus >> 3) & 1;
+            mstatus &= ~(1 << 3);
+            mstatus |= (mie_bit << 7);
+            
+            PC = mtvec;// Jumping to handler
+        }
     }
 
     void RUN(std::string FileName){ // Runs the program loop and Instruction Cycle
@@ -712,6 +784,8 @@ struct RISC_V
 
         while(running){
             uint32_t current_pc = PC;
+
+            checkInterrupt();
 
             if(!Check_Permission(PC, 1)){   //Checking if address has Execute Permission
                 std::cerr << "Fatal Error: Segmentation Fault (Instruction Fetch)" << std::endl;

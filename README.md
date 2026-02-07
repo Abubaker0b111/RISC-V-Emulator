@@ -24,6 +24,16 @@ Built from scratch in C++ to understand the micro-architectural details of moder
 
 ---
 
+## 🏗️ System Architecture
+
+The emulator models a complete **RV32I System-on-Chip**, simulating the data flow between the CPU Core, System Bus, and Memory-Mapped Peripherals.
+
+![RISC-V System Architecture Diagram](docs/architecture.png)
+
+*Figure 1: High-level data path showing the CPU internals (ALU, Registers, CSRs), the System Bus logic, and the Memory Map.*
+
+---
+
 ## 💻 Technical Details
 
 ### Memory Map
